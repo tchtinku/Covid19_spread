@@ -79,5 +79,64 @@ def process_time_features(df, pth, shift=0, merge_nyc=False, input_resolution="c
     time_features = time_features[time_features.columns.sort_values()]
     feature_tensors = {
         region: th.from_numpy(time_features[region].values)
-        for region in time_features.columns.get_level_
+        for region in time_features.columns.get_level_values(0).unique()
     }
+    if input_resolution == "county_state":
+        pth = pth.replace("state", "county_state")
+    th.save(feature_tensors, pth.replace(".csv", ".pt"))
+    
+def run_par(fs, args, kwargs, max_par=None):
+    if not isinstance(fs, list):
+        fs = [fs]*len(args)
+    if "MAX_PARALLELISM" in os.environ:
+        max_par = int(os.environ["MAX_PARALLELISM"])
+    print(f"Max parallelism = {max_par}")
+    if max_par is not None and max_par <= 1:
+        for _f, _args, _kwargs in zip(fs, args, kwargs):
+            _f(*_args, **_kwargs)
+        return
+    with mp.Pool(max_par) as pool:
+        results = [
+            pool.apply_async(f, args=a, kwds=k) for f, a, k in zip(fs, args, kwargs)
+        ]
+        [r.get() for r in results]
+        
+def create_time_features():
+    from .symptom_survey import prepare as ss_prepare
+    from .fb import prepare as fb_prepare
+    from .google import prepare as google_prepare
+    from .testing import prepare as testing_prepare
+    
+    fs = [ss_prepare, fb_prepare, google_prepare, testing_prepare]
+    run_par(fs, [()]*len(fs), [{}]*len(fs))
+    
+def main(metric, with_features, source, resolution):
+    df = SOURCES[source](metric)
+    df.index = pd.to_datetime(df.index)
+    
+    dates = df.index
+    df.columns = [c.split("_")[1] + ", "+c.split("_")[0] for c in df.columns]
+    
+    #drop all zero columns
+    df = df[df.columns[(df.sum(axis=0) != 0 ).values]]
+    
+    df = df.transpose() #row for each county, columns correspond to dates....
+    
+    #make sure counts are strictly increasing
+    df = df.cummax(axis=1)
+    
+    #throw away all-zero columns i.e days with no cases
+    counts = df.sum(axis=0)
+    df = df.iloc[:, np.where(counts>0)[0]]
+    
+    if resolution == "state":
+        df = df.groupby(lambda x: x.split(", ")[-1]).sum()
+        df = df.drop(
+            index=["Virgin Islands", "Northern Mariana Islands", "Puerto Rico", "Guam"],
+            errors="ignore",
+        )
+    
+    county_id = {c: i for i, c in enumerate(df.index)}
+    
+    df.to_csv(f"{SCRIPT_DIR}/data_{metric}.csv", index_label="region")
+    
