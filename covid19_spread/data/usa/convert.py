@@ -139,4 +139,82 @@ def main(metric, with_features, source, resolution):
     county_id = {c: i for i, c in enumerate(df.index)}
     
     df.to_csv(f"{SCRIPT_DIR}/data_{metric}.csv", index_label="region")
+    df[df.index.str.endswith("New York")].to_csv(
+        f"{SCRIPT_DIR}/data_{metric}_ny.csv", index_label="region"
+    )    
+    df[df.index.str.endswith("Florida")].to_csv(
+        f"{SCRIPT_DIR}/data_{metric}_f1.csv", index_label="region"
+    )
     
+    if resolution=="county":
+        #Build state graph
+        adj = np.zeros((len(df), len(df)))
+        for _, g in df.groupby(lambda x: x.split(", ")[-1]):
+            idxs = np.array([county_id[c] for c in g.index])
+            adj[np.ix_(idxs, idxs)] = 1
+            
+        print(adj)
+        th.save(th.from_numpy(adj), f"{SCRIPT_DIR}/state_graph.pt")
+        
+    if with_features:
+        create_time_features()
+        res = resolution
+        merge_nyc = metric == "deaths" and res == "county"
+        
+        features = [
+            (f"{SCRIPT_DIR}/testing/ratio_features_{res}.csv", 0, res),
+            (f"{SCRIPT_DIR}/testing/total_features_{res}.csv", 0, res),
+            (f"{SCRIPT_DIR}/fb/mobility_features_{res}_fb.csv", 5, res),
+            (f"{SCRIPT_DIR}/google/mobility_features_{res}_google.csv", 5, res),
+            (f"{SCRIPT_DIR}/google/weather_features_{res}.csv", 5, res),
+            (f"{SCRIPT_DIR}/google/epi_features_{res}.csv", 7, res),
+            (f"{SCRIPT_DIR}/google/epi_features_{res}.csv", 7, res),
+        ]
+        if res == "state":
+            features.append((f"{SCRIPT_DIR}/google/hosp_features_{res}.csv", 0, res))
+            features.append((f"{SCRIPT_DIR}/shifted_features_{res}.csv", 0, res))
+            features.append((f"{SCRIPT_DIR}/google/vaccination_state.csv", 0, res))
+        else:
+            features.append(
+                (f"{SCRIPT_DIR}/google/vaccination_state.csv", 0, "county_state")
+            )
+            
+        for signal, lag in [
+            (f"{SCRIPT_DIR}/symptom_survey/doctor-visits_smoothed_adj_cli-{{}}.csv", 2),
+            (f"{SCRIPT_DIR}/symptom_survey/fb-survey_smoothed_wcli-{{}}.csv", 0),
+            (
+             f"{SCRIPT_DIR}/symptom_survey/fb-survey_smoothed_hh_cmnty_cli-{{}}.csv",
+             0,   
+            ),
+            (
+             f"{SCRIPT_DIR}/symptom_survey/fb-survey_smoothed_wearing_mask_all-{{}}.csv",
+             5,   
+            ),
+            (
+             f"{SCRIPT_DIR}/symptom_survey/fb-survey_smoothed_wothers_masked-{{}}.csv",
+             5,   
+            ),
+            (
+             f"{SCRIPT_DIR}/symptom_survey/fb-survey_smoothed_wcovid_vaccinated_or_accept-{{}}.csv",
+             5,   
+            ),
+            (f"{SCRIPT_DIR}/fb/mobility_features_{{}}_fb.csv", 5),
+            (f"{SCRIPT_DIR}/google/mobility_features_{{}}_google.csv", 5),
+        ]:
+            if res == "county":
+                features.append((signal.format("county"), lag, "county")),
+                features.append((signal.format("state"), lag, "county_state"))
+            else:
+                features.append((signal.format("state"), lag, "state"))
+                
+        features = [(df, pth, lag, merge_nyc, r) for pth, lag, r in features]
+        run_par([process_time_features]*len(features), features, [{}]*len(features))
+        
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser("US data")
+    parser.add_argument("-metric", default="cases", choices=["cases", "deaths"])
+    parser.add_argument("-with-features", default=False, action="store_true")
+    parser.add_argument("-source", choices=SOURCES.keys(), default="nyt")
+    parser.add_argument("-resolution", choices=["cases", "deaths"], default="county")
+    opt = parser.parse_args()
+    main(opt.metric, opt.with_features, opt.source, opt.resolution)
