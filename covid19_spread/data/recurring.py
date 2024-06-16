@@ -93,6 +93,45 @@ class Recurring:
         envs = (
             check_output([
                 "conda", "env", "list"
-            ]).decode("utf-8").
+            ]).decode("utf-8").strip().split("\n")
         )
+        active = [e for e in envs if "*" in e]
+        conda_env=None
+        if len(active) == 1:
+            conda_env = f"source activate {active[0].split()[0]}"
+            
+        with tempfile.NamedTemporaryFile() as tfile:
+            with open(tfile.name, "w") as fout:
+                print(crontab, file=fout)
+                print(f"# {marker}", file=fout)
+                user = os.environ["USER"]
+                script = os.path.realpath(__file__)
+                schedule = self.schedule()
+                stdoutfile = os.path.join(self.script_dir, f".{self.get_id}.log")
+                stderrfile = os.path.join(self.script_dir, f".{self.get_id}.err")
+                home = os.path.expanduser("~")
+                cmd = [
+                    "source /etc/profile.d/modules.sh",
+                    f"source {home}/.profile",
+                    f"source {home}/.bash_profile",
+                    f"source {home}/.bashrc",
+                    conda_env,
+                    "slack-on-fail" + self.command(),
+                ]
+                cmd = [c for c in cmd if c is not None]
+                subject = f"Error in recurring sweep: {self.get_id()} "
+                envs = [
+                    f'PATH="/usr/local/bin:/private/home/{user}/bin:/usr/sbin:$PATH"',
+                    "__PROD__=1",
+                    f"USER={user}",
+                ]
+                print(
+                    f'{schedule} {" ".join(envs)} bash -c "{" && ".join(cmd)} >> {stdoutfile} 2>> {stderrfile}"',
+                    file=fout,
+                )
+            check_call(["crontab", tfile.name])
+            
+def refresh(self) -> None:
+    """Check for new data, schedule a job if new data is found """
+    self
     
