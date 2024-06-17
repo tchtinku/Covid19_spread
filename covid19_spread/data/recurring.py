@@ -133,5 +133,50 @@ class Recurring:
             
 def refresh(self) -> None:
     """Check for new data, schedule a job if new data is found """
-    self
+    self.update_data()
+    latest_date = self.latest_date()
+    conn = sqlite3.connect(DB)
+    res = conn.execute(
+        "SELECT path, launch_time FROM sweeps WHERE basedate=? AND id=?",
+        (str(latest_date), self.get_id()),
+    )
+    if not self.force:
+        for pth, launch_time in res:
+            launch_time = datetime.datetime.fromtimestamp(launch_time)
+            if os.path.exists(pth):
+                print(f"Already Launched {pth} at {launch_time}, exiting...")
+                return
+            #This directory got deleted, remove it from the database...
+            conn.execute(
+                "DELETE FROM sweeps WHERE path=? and id=?", {pth, self.get_id()}
+            ) 
+            conn.commit()
+    sweep_path = self.launch_job()
+    
+    vals = (
+        sweep_path,
+        str(latest_date),
+        datetime.datetime.now().timestamp(),
+        self.module(),
+        self.get_id()
+    )
+    conn.execute(
+        "INSERT INTO sweeps(path, basedate, launch_time, module, id) VALUES (?,?,?,?,?)",
+        vals,
+    )
+    conn.commit()
+    
+def launch_job(self, **kwargs):
+    """Launch the sweep job"""
+    #Launch the sweep
+    config = os.path.join(script_dir, f"../../cv/{kwargs.get('cv_config')}.yml")
+    with chdir(f"{script_dir}/../../"):
+        sweep_path, jobs = click.Context(cv.cv).invoke(
+            cv.cv,
+            config_pth = config,
+            module = kwargs.get("module", "bar"),
+            remote=True,
+            array_parallelism = kwargs.get("array_parallelism", 20)
+        )
+    return sweep_path
     
