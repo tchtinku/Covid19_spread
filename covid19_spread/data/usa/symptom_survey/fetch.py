@@ -41,3 +41,33 @@ def main(geo_value, source, signal):
             print(f"Skipping {source}/{signal} for {date_str}")
             continue
         
+        df = pd.DataFrame(res["epidata"])
+        df.rename(
+            columns={
+                "geo_value": geo_value,
+                "time_value": "date",
+                "value": signal,
+                "direction": f"{signal}_direction",
+                "stderr": f"{signal}_stderr",
+                "sample_size": f"{signal}_sample_size",
+            },
+            inplace=True,
+        )
+        df.to_csv(fout, index=False)
+        dfs.append(df)
+    pd.concat(dfs).to_csv(f"{SCRIPT_DIR}/{geo_value}/{source}/{signal}.csv")
+    
+SIGNALS = [
+    ("fb-survey", "smoothed_hh_cmnty_cli"),
+    ("fb-survey", "smoothed_wcli"),
+    ("doctor-visits", "smoothed_adj_cli"),
+    ("fb-survey", "smoothed_wcovid_vaccinated_or_accept"),
+    ("fb-survey", "smoothed_wearing_mask"),
+    ("fb-survey", "smoothed_wearing_mask_7d"),
+    ("fb-survey", "smooothed_wothers_masked"),
+    ("fb-survey", "smoothed_wcovid_vaccinated_or_accept"),
+]
+
+if __name__ == "__main__":
+    main(sys.argv[1], *sys.argv[2].split("/"))
+        
