@@ -38,3 +38,34 @@ def get_df(source, signal, resolution):
 def main(signal, resolution):
     source, signal = signal.split("/")
     df = get_df(source, signal, resolution)
+    
+    if resolution = "county":
+        cases = pd.read_csv(
+            f"{SCRIPT_DIR}/../data_cases.csv", index_col="region"
+        ).index.to_frame()
+        cases["state"] = [x.split(", ")[-1] for x in cases.index]
+        cases = cases.drop(columns="region")
+        idx = pd.MultiIndex.from_product([cases.index, df["type"].unique()])
+        type_ = df["type"].iloc[0]
+        df = df.reset_index().set_index(["loc", "type"]).reindex(idx).fillna(0)
+        df2 = get_df(source, signal, "state")
+        df2 = df2.merge(cases[["state"]], left_index=True, right_on="state")[
+            df2.columns
+        ]
+        df = pd.concat([df, df2.set_index("type", append=True)])
+        
+    df = df[[c for c in df.columns if isinstance(c, datetime)]]
+    df.columns = [str(x.date()) if isinstance(x, datetime) else x for x in df.columns]
+    
+    df.round(3).to_csv(
+        f"{SCRIPT_DIR}/{source}_{signal}-{resolution}.csv",
+        index_label=["region", "type"],
+    )
+    
+    
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-signal", default="smoothed_hh_cmnty_cli")
+    parser.add_argument("-resolution", choices=["state", "county"], default="county")
+    opt = parser.parse_args()
+    main(opt.signal, opt.resolution)
