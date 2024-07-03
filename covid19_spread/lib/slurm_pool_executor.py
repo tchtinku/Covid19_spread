@@ -127,4 +127,72 @@ class Worker:
         cur.execute(query)
         return cur.fetchall()
     
+    def finished(self, cur):
+        cur.execute(
+            f"""
+            SELECT COUNT(1) FROM jobs
+            WHERE status NOT IN ({JobStatus.success}, {JobStatus.failure}) AND id='{self.db_pth}'
+            """
+        )
+        return cur.fetchone()[0] == 0
+    
+    def count_running(self, cur):
+        cur.execute(
+            f"SELECT COUNT(1) FROM jobs where status > {len(JobStatus)} AND id = '{self.db_pth}'"
+        )
+        return cur.fetchone()[0]
+    
+    def get_final_jobs(self, cur):
+        cur.execute(
+            f"SELECT pickle, job_id, retry_count FROM jobs WHERE status={JobStatus.final} AND id = '{self.db_pth}' LIMIT 1"
+        )
+        return cur.fetchall()
+    
+    def checkpoint(self):
+        print(f"Worker {self.worker_id} checkpointing")
+        if self.current_job is not None:
+            pickle, job_id, retry_count = self.current_job
+            print(f"Worker {self.worker_id} setting {pickle} back to pending...")
+            transaction_manager = TransactionManager(self.db_pth)
+            # Set the job back to pending
+            transaction_manager.run(
+                lambda conn: conn.execute(
+                    f"UPDATE jobs SET status={JobStatus.pending} WHERE pickle='{pickle}' AND id='{self.db_pth}'"
+                )
+            )
+        return submitit.helpers.DelayedSubmission(Worker(self.db_pth, self.worker_id))
+    
+    def __call__(self):
+        self.worker_finished = False
+        worker_job_id = f"worker_{self.worker_id}"
+        running_status = (
+            len(JobStatus) + self.worker_id + 1
+        ) #mark in progress with this code
+        transaction_manager = TransactionManager(self.db_pth)
+        while not self.worker_finished:
+            if self.sleep > 0:
+                print(f"Sleeping for {self.sleep} seconds..")
+                time.sleep(self.sleep)
+            print(f"Worker {self.worker_id} getting job to run")
+            
+            def txn(conn):
+                ready = self.fetch_ready_job(conn)
+                status = JobStatus.pending
+                if len(ready) == 0: #no jobs ready
+                    if self.finished(conn):
+                        self.worker_finished = True
+                        return None #all jobs are finished, exiting....
+                    if self.count_running(conn) > 0:
+                        self.sleep = min(max(self.sleep * 2, 1), 30)
+                        return None
+                    
+                    ready = self.get_final_jobs(conn)
+                    status = JobStatus.final
+                    if len(ready) == 0:
+                        self.sleep = min(max(self.sleep * 2, 1), 30)
+                        return None
+                    print(
+                        f"Worker {self.worker_id} is executing final_job: {ready[0][0]}"
+                    )                    
+    
                     
