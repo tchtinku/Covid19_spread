@@ -193,6 +193,107 @@ class Worker:
                         return None
                     print(
                         f"Worker {self.worker_id} is executing final_job: {ready[0][0]}"
-                    )                    
+                    )
+                pickle, job_id, retry_count = ready[0][0], ready[0][1], ready[0][2]
+                #Mark that we're working on this job.
+                conn.execute(
+                    f"""
+                    UPDATE jobs SET status = {running_status}, worker_id='{worker_job_id}'
+                    WHERE pickle='{pickle}' AND status={status} AND id='{self.db_pth}'
+                    """
+                )
+                return pickle, job_id, retry_count
+            
+            res = transaction_manager.run(txn)
+            if res is None:
+                continue
+            self.current_job = res
+            self.sleep = 0
+            pickle, job_id, retry_count = res
+            print(f"Worker {self.worker_id} got job to run: {pickle}")   
+            
+            #run the job
+            job_dir = os.path.dirname(pickle)
+            paths = utils.JobPaths(job_dir, job_id=job_id)
+            with paths.stderr.open("w", buffering=1) as stderr, paths.stdout.open(
+                "w", buffering=1
+            ) as stdout:
+                with redirect_stderr(stderr), redirect_stdout(stdout):
+                    try:
+                        with env_var({"SLURM_PICKLE_PTH": str(pickle)}):
+                            dl = utils.DelayedSubmission.load(pickle)
+                            dl.result()
+                            status = JobStatus.success
+                    except Exception:
+                        retry_count -= 1
+                        print(f"Job failed, retry_count = {retry_count}")
+                        status = (
+                            JobStatus.failure if retry_count == 0 else JobStatus.pending
+                        )
+                        traceback.print_exc(file=sys.stderr)
+                print(f"Worker {self.worker_id} finished job with status {status}")
+                transaction_manager.run(
+                    lambda conn: conn.execute(
+                        f"Update jobs SET status={status.value}, retry_count={retry_count} WHERE pickle='{pickle}' AND id='{self.db_pth}'"
+                    )
+                )
+                self.current_job = None
+                print(f"Worker {self.worker_id} updated job status")
+                
+class SlurmPoolExecutor(SlurmExecutor):
+    def __init__(self, *args, **kwargs):
+      db_pth = kwargs.pop("db_pth", None)
+      super().__init__(*args, **kwargs)
+      self.launched = False
+      self.nested = False
+      os.makedirs(self.folder, exist_ok=True)
+      if db_pth is None:
+          #Place the actual database in ~/.slurm_pool/<unique_id>.db
+          unique_filename = str(uuid.uuid4())
+          self.db_pth = os.path.expanduser(f"~/.slurm_pool/{unique_filename}.db")
+          os.makedirs(os.path.dirname(self.db_pth), exist_ok=True)
+          if not os.path.exists(os.path.join(str(self.folder), ".job.db")):
+              os.symlink(self.db_pth, os.path.join(str(self.folder), ".job.db"))
+      else:
+          self.db_pth=db_pth
+      print(self.db_pth)
+      self.transaction_manager = TransactionManager(self.db_pth)
+      with self.transaction_manager as conn:
+          conn.execute(
+              "CREATE TABLE IF NOT EXISTS jobs(status int, pickle text, job_id text, worker_id text, id TEXT, retry_count INT)"
+          )
+          conn.execute("CREATE INDEX IF NOT EXISTS jobs_p_idx ON jobs(pickle)")
+          conn.execute("CREATE INDEX IF NOT EXISTS jobs_id_idx ON jobs(id)")
+          conn.execute(
+              "CREATE TABLE IF NOT EXISTS dependencies(pickle text, depends_on text, id TEXT)"
+          )
+          conn.execute("CREATE TABLE if not exists dep_p_idx ON dependencies(pickle)")
+          conn.execute(
+              "CREATE INDEX IF NOT EXISTS dep_p_idx ON dependencies(id)"
+          )
+          
+    def _submit_command(self, command):
+        tmp_uuid = uuid.uuid4().hex
+        tasks_ids = list(range(self._num_tasks()))
+        job = self.job_class(folder=self.folder, job_id=tmp_uuid, tasks=tasks_ids)
+        return job
+    
+    def _internal_process_submissions(
+        self, delayed_submissions: tp.List[utils.DelayedSubmission]
+    ) -> tp.list[core.Job[tp.Any]]:
+        if len(delayed_submissions) == 1:
+            jobs = super()._internal_process_submissions(delayed_submissions)
+            vals = (
+                JobStatus.pending,
+                str(jobs[0].paths.submitted_pickle),
+                jobs[0].job_id,
+                self.db_pth,
+                3,
+            )
+            with self.transaction_manager as conn:
+                conn
+              
+                
+                                 
     
                     
