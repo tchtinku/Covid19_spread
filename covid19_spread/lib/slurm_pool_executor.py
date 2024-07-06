@@ -136,7 +136,12 @@ class Worker:
             jobs.status={JobStatus.pending} AND 
             jobs.id='{self.db_pth}' AND 
             (dependencies.id='{self.db_pth}' OR dependencies.id IS NULL) AND 
-cs
+            (j2.id='{self.db_pth}' OR j2.id IS NULL)
+        GROUP BY jobs.pickle, jobs.job_id 
+            HAVING MIN(COALESCE(j2.status, {JobStatus.success})) >= {JobStatus.success} 
+            AND MAX(COALESCE(j2.status, {JobStatus.success})) <= {JobStatus.success}
+        LIMIT 1
+        """
         cur.execute(query)
         return cur.fetchall()
 
@@ -161,7 +166,19 @@ cs
         )
         return cur.fetchall()
 
-r
+    def checkpoint(self):
+        print(f"Worker {self.worker_id} checkpointing")
+        if self.current_job is not None:
+            pickle, job_id, retry_count = self.current_job
+            print(f"Worker {self.worker_id} setting {pickle} back to pending...")
+            transaction_manager = TransactionManager(self.db_pth)
+            # Set the job back to pending
+            transaction_manager.run(
+                lambda conn: conn.execute(
+                    f"UPDATE jobs SET status={JobStatus.pending} WHERE pickle='{pickle}' AND id='{self.db_pth}'"
+                )
+            )
+        return submitit.helpers.DelayedSubmission(Worker(self.db_pth, self.worker_id))
 
     def __call__(self):
         self.worker_finished = False
@@ -193,7 +210,9 @@ r
                     if len(ready) == 0:
                         self.sleep = min(max(self.sleep * 2, 1), 30)
                         return None
-s
+                    print(
+                        f"Worker {self.worker_id} is executing final_job: {ready[0][0]}"
+                    )
 
                 pickle, job_id, retry_count = ready[0][0], ready[0][1], ready[0][2]
                 # Mark that we're working on this job.
