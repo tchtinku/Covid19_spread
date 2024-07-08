@@ -20,4 +20,13 @@ class TestLoad:
         )
         assert suffolk_present
         
+    @pytest.mark.parametrize("path", [DATA_PATH_US_CSV, DATA_PATH_NY_CSV])
+    def test_load_confirmed(self, path):
+        df = load.load_confirmed(path, None)
+        assert df.index.name == "date"
+        assert (df >= 0).all()
+        #should only have one column for total cases
+        assert len(df.shape) == 1
+        
+        
         
