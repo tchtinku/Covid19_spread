@@ -71,3 +71,57 @@ def ensemble(basedirs, cfg, module, prefix, outdir):
     means = []
     stds = []
     mean_deltas = []
+    kwargs = {"index_col":"date", "parse_dates": ["date"]}
+    stdfile = "std_closed_form.csv"
+    meanfile = "mean_closed_form.csv"
+    for basedir in basedirs:
+        if os.path.exists(_path(cfg["validation"]["output"])):
+            means.append(pd.read_csv(_path(cfg["validation"]["output"]), **kwargs))
+        if os.path.exists(_path(stdfile)):
+            stds.append(pd.read_csv(_path(stdfile), **kwargs))
+            mean_deltas.append(pd.read_csv(_path(meanfile), **kwargs))
+    if len(stds) > 0:
+        #Average the variance and take square root
+        std = pd.concat(stds.pow(2).groupby(level=0).mean().pow(0.5))
+        std.to_csv(os.path.join(outdir, prefix + meanfile))
+        mean_deltas = pd.concat(mean_deltas).groupby(level=0).mean()
+        mean_deltas.to_csv(os.path.join(outdir, prefix + meanfile))
+        
+    assert len(means) > 0, "All ensemble jobs failed!!!"
+    
+    mod = importlib.import_module("covid19_spread." + module).CV_CLS()
+    
+    if len(stds) > 0:
+        pred_interval = cfg.get("prediction_interval", {})
+        piv = mod.run_prediction_interval(
+            os.path.join(outdir, prefix+meanfile)
+            os.path.join(outdir, prefix+stdfile),
+            pred_interval.get("intervals", [0.99, 0.95, 0.8])
+        )
+        piv.to_csv(os.path.join(outdir, prefix + "piv.csv"), index=False)
+        
+    mean = pd.concat(means).groupby(level=0).median()
+    outfile = os.path.join(outdir, prefix + cfg["validation"["output"]]) 
+    mean.to_csv(outfile, index_label="date")
+    
+    # --metrics ---
+    metric_args = cfg[module].get("metrics", {})
+    df_val, json_val = mod.compute_metrics(
+        cfg[module]["data"], outfile, None, metric_args
+    )
+    df_val.to_csv(os.path.join(outdir, prefix + "metrics.csv"))
+    with open(os.path.join(outdir, prefix + "metrics.json"), "w") as fout:
+        json.dump(json_val, fout)
+    print(df_val)
+    
+def run_cv(
+    module: str,
+    basedir: str,
+    cfg: Dict[str, Any],
+    prefix="",
+    basedate=None,
+    executor=None,
+    test_run: bool = False, #is this a test or validation run
+):
+    """Run """    
+
