@@ -123,5 +123,111 @@ def run_cv(
     executor=None,
     test_run: bool = False, #is this a test or validation run
 ):
-    """Run """    
+    """Run cross validation for one set of hyperparameters"""  
+    try:
+        basedir = basedir.replace("%j", submitit.JobEnvironment().job_id)
+    except Exception:
+        pass #running locally basedir is fine
+    os.makedirs(basedir, exist_ok=True)
+    print(f"CWD = {os.getcwd()}")
+    
+    def _path(path):
+        return os.path.join(basedir, path)
+    
+    load_configs(cfg, module, _path(prefix + f"{module}.yml"))
+    
+    n_models = cfg[module]["train"].get("n_models", 1)
+    if n_models > 1:
+        launcher = map if executor is None else executor.map_array
+        fn = partial(
+            run_cv,
+            module,
+            prefix=prefix,
+            basedate=basedate,
+            executor=executor,
+            test_run=test_run
+        )
+        configs = [
+            set_dict(copy.deepcopy(cfg), [module, "train", "n_models"], 1)
+            for _ in range(n_models)
+        ]
+        basedirs = [os.path.join(basedir, f"job_{i}") for i in range(n_models)]
+        with ExitStack() as stack:
+            if executor is not None:
+                stack.enter_context(executor.set_folder(os.path.join(basedir, "%j")))
+                
+            jobs = list(launcher(fn, basedirs, configs))
+            launcher = (
+                ensemble
+                if executor is None
+                else partial(executor.submit_dependent, jobs, ensemble)
+            )
+            ensemble_job = launcher(basedirs, cfg, module, prefix, basedir)
+            if executor is not None:
+                #Whatever job depend on "this" job, should be extended to the newly created job
+                executor.extend_dependencies(jobs + [ensemble_job])
+            return jobs + [ensemble_job]
+    
+    #setup input/output paths
+    dset = cfg[module]["data"]
+    val_in = _path(prefix + "filtered_" + os.path.basename(dset))
+    val_test_key = "test" if test_run else "validation"
+    val_out = _path(prefix + cfg[val_test_key]["output"])
+    cfg[module]["train"]["fdat"] = val_in
+    
+    mod = importlib.import_module("covid19_spread." + module).CV_CLS()
+    
+    # --- store configs to reproduce results
+    log_configs(cfg, module, _path(prefix + f"{module}.yml"))
+    
+    ndays = 0 if test_run else cfg[val_test_key]["days"]
+    if basedate is not None:
+        #If we want to train from a particular basedate, then also subtract
+        #out the different in days. Ex. if ground truth contains data up to 5/20/2020
+        #but the basedate is 5/10/2020, then drop an extra 10 days in addition to validation days.
+        gt = metrics.load_ground_truth(dset)
+        assert  gt.index.max() >= basedate
+        ndays += (gt.index.max() - basedate).days
+        
+    filter_validation_days(dset, val_in, ndays)
+    #apply data pre-processing
+    preprocessed = _path(prefix + "preprocessed_" + os.path.basename(dset))
+    mod.preprocessed(val_in, preprocessed, cfg[module].get("preprocess", {}))
+    
+    mod.setup_tensorboard(basedir)
+    #setup logging
+    train_params = Namespace(**cfg[module]["train"])
+    n_models = getattr(train_params, "n_models", 1)
+    print(f"Training {n_models} models")
+    # --- train ----
+    model = mod.run_train(
+        preprocessed, train_params, _path(prefix + cfg[module]["output"])
+    )
+    
+    # --- simulate ----
+    with th.no_grad():
+        sim_params = cfg[module].get("simulate", {})
+        #Returns the number of new cases for each day
+        df_forecast_deltas = mod.run_simulate(
+            preprocessed,
+            train_params,
+            model,
+            sim_params=sim_params,
+            days=cfg[val_test_key]["days"]
+        )
+        df_forecast = common.rebase_forecast_deltas(val_in, df_forecast_deltas)
+        
+    mob.tb_writer.close()
+    
+    print(f"Storing validation in {val_out}")
+    df_forecast.to_csv(val_out, index_label="date")
+    
+    #--metrics---
+    metric_args = cfg[module].get("metrics", {})
+    df_val, json_val = mod.compute_metrics(
+        cfg[module]["data"], val_out, model, metric_args
+    )
+    df_val.to_csv(_path(prefix + "metrics.csv"))
+    with open(_path(prefix + "metrics.json"))
+        
 
