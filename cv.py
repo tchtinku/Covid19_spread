@@ -228,6 +228,76 @@ def run_cv(
         cfg[module]["data"], val_out, model, metric_args
     )
     df_val.to_csv(_path(prefix + "metrics.csv"))
-    with open(_path(prefix + "metrics.json"))
+    with open(_path(prefix + "metrics.json"), "w") as fout:
+        json.dump(json_val, fout)
+    print(df_val)
+    
+    # ------ Prediction Interval ---------
+    if "prediction_interval" in cfg and prefix == "final_model_":
+        try:
+            with th.no_grad():
+                #FIXME: refactor to use rebase_forecast_deltas
+                gt = metrics.load_ground_truth(val_in)
+                basedate = gt.index.max()
+                prev_day = gt.loc[[basedate]]
+                pred_interval = cfg.get("prediction_interval", {})
+                df_std, df_mean = mod.run_standard_deviation(
+                    preprocessed,
+                    train_params,
+                    pred_interval.get("nsamples", 100),
+                    pred_interval.get("intervals", [0.99, 0.95, 0.8]),
+                    prev_day.values.T,
+                    model,
+                    pred_interval.get("batch_size", 8),
+                    closed_form=True,
+                )
+                df_std.to_csv(_path(f"{prefix}std_closed_form.csv"), index_label="date")
+                df_mean.to_csv(
+                    _path(f"{prefix}mean_closed_form.csv"), index_label=date
+                )
+                piv = mod.run_prediction_interval(
+                    _path(f"{prefix}mean_closed_form.csv"),
+                    _path(f"{prefix}std_closed_form.csv"),
+                    pred_interval.get("intervals", [0.99, 0.95, 0.8]),
+                )
+                piv.to_csv(_path(f"{prefix}piv.csv"), index=False)
+        except NotImplementedError:
+            pass
+        
+def filter_validation_days(dset: str, val_in: str, validation_days: int):
+    """Fliters validation days and writes output to val_in path"""
+    if dset.endswith(".csv"):
+        common.drop_k_days_csv(dset, val_in, validation_days)
+    elif dset.endswith(".h5"):
+        common.drop_k_days(dset, val_in, validation_days)
+    else:
+        raise RuntimeError(f"Unrecognised dataset extension: {dset}")
+    
+def load_model(model_pth, cv, args):
+    chkpnt = th.load(model_pth)
+    cv.initialize(args)
+    cv.func.load_state_dict(chkpnt)
+    return cv.func
+
+def  copy_assets(cfg, dir):
+    if isinstance(cfg, dict):
+        return {k: copy_assets(v, dir) for k, v in cfg.items()}
+    elif isinstance(cfg, list):
+        return [copy_assets(x, dir) for x in cfg]
+    elif isinstance(cfg, str) and os.path.exists(cfg):
+        new_pth = os.path.join(dir, "assets", os.path.basename(cfg))
+        shutil.copy(cfg, new_pth)
+        return new_pth
+    else:
+        return cfg
+    
+def log_configs(cfg: Dict[str, Any], module: str, path: str):
+    """Logs configs for job for reproducibility"""
+    with open(path, "w") as f:
+        yaml.dump(cfg[module], f)
+        
+def run_best(config, module, remote, basedir, basedate=None, executor=None):
+    mod = importlib.import_module("covid19_spread." + module).CV_CLS()
+    sweep_config
         
 
