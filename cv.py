@@ -298,6 +298,42 @@ def log_configs(cfg: Dict[str, Any], module: str, path: str):
         
 def run_best(config, module, remote, basedir, basedate=None, executor=None):
     mod = importlib.import_module("covid19_spread." + module).CV_CLS()
-    sweep_config
+    sweep_config = load_config(os.path.join(basedir, "cfg.yml"))
+    best_runs = mod.model_selection(basedir, config=sweep_config[module], module=module)
+    
+    if remote and executor is None:
+        executor = mk_executor(
+            "model_selection", basedir, config[module].get("resources", {})
+        )
+        
+    with open(os.path.join(basedir, "model_selection.json"), "w") as fout:
+        json.dump([x.asdict() for x in best_runs], fout)
+        
+    cfg = copy.deepcopy(config)
+    best_runs_df = pd.DataFrame(best_runs)
+    
+    def run_cv_and_copy_results(tags, module, pth, cfg, prefix):
+        try:
+            jobs = run_cv(
+                module, 
+                pth,
+                cfg,
+                prefix=prefix,
+                basedate=basedate,
+                executor=executor,
+                test_run=True,
+            )
+            
+            def rest():
+                shutil.copy(
+                    os.path.join(pth, f'finsl_model_{cfg["validation"]["output"]}'),
+                    os.path.join(
+                        os.path.dirname(pth), f"forecasts/forecast_{tag}.csv"
+                    ),
+                )
+                
+    
+    
+    
         
 
