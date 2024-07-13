@@ -331,6 +331,20 @@ def run_best(config, module, remote, basedir, basedate=None, executor=None):
                         os.path.dirname(pth), f"forecasts/forecast_{tag}.csv"
                     ),
                 )
+                if "prediction_interval" in cfg:
+                    piv_pth = os.path.join(
+                        pth,
+                        f'final_model_{cfg["prediction_interval"]["output_std"]}'
+                    )
+                    if os.path.exists(piv_pth):
+                        shutil.copy(
+                            piv_pth,
+                            os.path.join(
+                                os.path.dirname(pth), f"forecasts/std_{tag}.csv"
+                                ),
+                        )
+            if cfg[module]["train"].get("n_module", 1) > 1 and executor is not None:
+                            
                 
     
     
